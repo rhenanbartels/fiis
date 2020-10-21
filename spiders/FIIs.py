@@ -21,10 +21,10 @@ MESES = {
 
 def parse_labels(labels):
     rows = []
-    dia = "1"
+    dia = 1
     for label in labels:
         mes, ano = label.replace('"', "").split("/")
-        rows.append(f"{ano}-{MESES[mes]}-{dia}")
+        rows.append(f"{ano}-{int(MESES[mes]):02d}-{dia:02d}")
 
     return rows
 
@@ -35,6 +35,22 @@ def parse_valores(valores):
         rows.append(float(valor))
 
     return rows
+
+
+def join_results(**data):
+    dates = sorted(set(sum([list(d.keys()) for d in data.values()], [])))
+    new_rows = []
+    for date in dates:
+        new_rows.append(
+            {
+                "data": date,
+                "vp": data["vp"].get(date),
+                "dividend_yield": data["dy"].get(date),
+                "dividendos": data["dividendos"].get(date)
+            }
+        )
+
+    return new_rows
 
 
 class FIIs(scrapy.Spider):
@@ -53,16 +69,21 @@ class FIIs(scrapy.Spider):
 
     def parse_pagina_fii(self, response):
         cod_negociacao = response.meta.get("cod_negociacao")
-        yield from self.parse_vp(response, cod_negociacao)
-        yield from self.parse_dy(response, cod_negociacao)
-        yield from self.parse_dividendos(response, cod_negociacao)
+        vp = self.parse_vp(response, cod_negociacao)
+        dy = self.parse_dy(response, cod_negociacao)
+        dividendos = self.parse_dividendos(response, cod_negociacao)
+        if not vp or not dy or not dividendos:
+            return 
+        for row in join_results(vp=vp, dy=dy, dividendos=dividendos):
+            row["cod_negociacao"] = cod_negociacao
+            yield row
 
-    def parse_chart(self, response, chart_id, value_name):
+    def parse_chart(self, response, chart_id, value_name, col_name):
         js = response.xpath(
             f'//div[@id="{chart_id}"]//script/text()'
         ).extract_first()
 
-        if js is None:
+        if not js:
             return []
 
         labels = parse_labels(
@@ -72,34 +93,31 @@ class FIIs(scrapy.Spider):
             js.split(f'"{value_name}","data":[')[1].split(']')[0].split(",")
         )
 
-        return [{"data":d, "valor": v} for d, v in zip(labels, values)]
+        return {d: v for d, v in zip(labels, values)}
 
     def parse_dy(self, response, cod_negociacao):
         rows = self.parse_chart(
             response,
             chart_id="yields-chart-wrapper",
-            value_name="Dividend Yield"
+            value_name="Dividend Yield",
+            col_name="dividend_yield"
         )
-        for row in rows:
-            row.update({"tipo_info": "dy", "cod_negociacao": cod_negociacao})
-            yield row
+        return rows
 
     def parse_vp(self, response, cod_negociacao):
         rows = self.parse_chart(
             response,
             chart_id="patrimonial-value-chart-wrapper",
-            value_name="VP"
+            value_name="VP",
+            col_name="valor_patrimonial"
         )
-        for row in rows:
-            row.update({"tipo_info": "vp", "cod_negociacao": cod_negociacao})
-            yield row
+        return rows
 
     def parse_dividendos(self, response, cod_negociacao):
         rows = self.parse_chart(
             response,
             chart_id="dividends-chart-wrapper",
-            value_name="Dividendos"
+            value_name="Dividendos",
+            col_name="dividendos"
         )
-        for row in rows:
-            row.update({"tipo_info": "dividendos", "cod_negociacao": cod_negociacao})
-            yield row
+        return rows
